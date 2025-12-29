@@ -1,0 +1,2 @@
+- worked in cursor
+- Used Claude 4.5 sonnet to analyze the codebase and help me understand what was happening, since I am unfamiliar with both the technology and with Typscript
