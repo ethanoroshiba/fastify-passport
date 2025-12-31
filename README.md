@@ -82,9 +82,9 @@ server.post('/api/login', async (request, reply) => {
     reply,
     { session: true }
   )
-  
+
   if (result.ok) {
-    return { 
+    return {
       success: true,
       user: result.user,
       message: 'Login successful'
@@ -104,11 +104,11 @@ server.get('/api/profile', async (request, reply) => {
     request,
     reply
   )
-  
+
   if (!result.ok) {
     return reply.code(401).send({ error: 'Authentication required' })
   }
-  
+
   return { profile: result.user }
 })
 
@@ -177,6 +177,55 @@ A hook that **must be added**. Sets up `@fastify/passport`'s connector with `@fa
 
 `@fastify/passport` provides two approaches for authenticating requests: **hook-based** and **programmatic**. Both approaches support the same strategies and options, but differ in how they handle authentication results.
 
+### AuthContext: request.authContext (opt-in observability)
+
+`@fastify/passport` can optionally populate **per-request authentication metadata** on `request.authContext`. This is designed for audit logs, metrics, and debugging without leaking sensitive values (it does **not** include passwords, tokens, full user objects, strategy errors, etc.).
+
+- **Opt-in per request**: `authContext` is only recorded if you set `request.authContext` to an object at the start of the request lifecycle (for example, in an `onRequest` hook). By default it is `undefined`.
+- **Same for both approaches**: it works the same whether you use the hook-based `authenticate()` or programmatic `authenticateRequest()`.
+- **“Include the key to enable it”**: some fields are only populated if you include that key in the object you set. (This allows you to decide what gets recorded.)
+
+`AuthContext` shape:
+
+```typescript
+interface AuthContext {
+  attemptedStrategies: string[]
+  elapsedMs: number
+  status: 'authenticated' | 'rejected'
+  elapsedPerStrategy?: number[] // index-aligned with attemptedStrategies
+  userId?: string
+  requestedScope?: string
+}
+```
+
+**How to enable it (recommended pattern):**
+
+```js
+// Enable AuthContext on every request (or do this only for routes you care about)
+server.addHook('onRequest', async (request) => {
+  request.authContext = {
+    attemptedStrategies: [],
+    elapsedMs: 0,
+    status: 'rejected',
+
+    // Optional fields: include the key to opt in
+    elapsedPerStrategy: [],
+    userId: '',
+    requestedScope: ''
+  }
+})
+
+// Example: safe audit logging
+server.addHook('onResponse', async (request, reply) => {
+  if (request.authContext) {
+    request.log.info(
+      { auth: request.authContext, statusCode: reply.statusCode },
+      'auth attempt'
+    )
+  }
+})
+```
+
 ### Hook-Based: authenticate(strategy, options, callback?)
 
 **When to use:** Standard authentication flows where you want automatic handling of success/failure (redirects, status codes, etc.).
@@ -187,9 +236,9 @@ Returns a hook that authenticates requests and automatically handles responses. 
 // Automatic handling - redirects on success/failure
 server.post(
   '/login',
-  { preValidation: fastifyPassport.authenticate('local', { 
+  { preValidation: fastifyPassport.authenticate('local', {
     successRedirect: '/dashboard',
-    failureRedirect: '/login' 
+    failureRedirect: '/login'
   })},
   () => {}
 )
@@ -199,6 +248,8 @@ server.get(
   '/protected',
   { preValidation: fastifyPassport.authenticate('jwt') },
   async (request) => {
+    // If enabled, AuthContext is available here too:
+    // request.log.info({ auth: request.authContext }, 'auth details')
     return { user: request.user }
   }
 )
@@ -226,21 +277,24 @@ interface AuthResult {
 // Custom success/failure handling
 server.post('/api/login', async (request, reply) => {
   const result = await fastifyPassport.authenticateRequest(
-    'local', 
-    request, 
-    reply, 
+    'local',
+    request,
+    reply,
     { session: true }
   )
-  
+
   if (result.ok) {
-    return { 
-      success: true, 
+    return {
+      success: true,
       user: result.user,
-      token: generateToken(result.user) 
+      // If enabled, AuthContext is populated by the call above:
+      auth: request.authContext,
+      token: generateToken(result.user)
     }
   } else {
-    return reply.code(result.status || 401).send({ 
+    return reply.code(result.status || 401).send({
       success: false,
+      auth: request.authContext,
       message: result.challenges?.[0] || 'Authentication failed'
     })
   }
@@ -253,13 +307,13 @@ server.get('/api/user', async (request, reply) => {
     request,
     reply
   )
-  
+
   if (!result.ok) {
     // Log failed strategy for monitoring
     request.log.warn({ strategy: result.strategy }, 'Auth failed')
     return reply.code(401).send({ error: 'Unauthorized' })
   }
-  
+
   return { user: result.user }
 })
 ```
@@ -275,7 +329,17 @@ server.get('/api/user', async (request, reply) => {
 | Custom error messages/logging | `authenticateRequest` | Access to detailed failure information |
 | OAuth callback handlers | `authenticate` hook | Built-in redirect handling |
 
-**Migration tip:** Existing `authenticate` usage continues to work unchanged. Adopt `authenticateRequest` incrementally for routes needing custom behavior.
+### Migration guidance (existing users)
+
+If you’re already using `authenticate()` hooks, you can adopt `AuthContext` **without changing your authentication flow**:
+
+- **What stays the same**: strategies, `authenticate()`/`authorize()` usage, sessions (`secureSession()` / `@fastify/session`), and `request.user` behavior.
+- **What gets easier**: consistent audit logs and metrics (which strategies ran, how long they took, overall outcome) across *both* hook-based and programmatic flows—without needing to parse strategy errors or serialize sensitive objects.
+- **How to adopt**:
+  - Add an `onRequest` hook to initialize `request.authContext` (see the example above), or do it only for routes where you want telemetry.
+  - Optionally include `elapsedPerStrategy`, `userId`, and/or `requestedScope` keys to opt into recording those fields.
+
+You can still adopt `authenticateRequest()` incrementally for routes needing custom response behavior; `AuthContext` works the same either way.
 
 ### Common Options (both methods)
 
@@ -360,18 +424,18 @@ fastify.get(
   async (request, reply) => `Hello ${request.user.name}!`
 )
 
-// Programmatic: authenticate against multiple strategies  
+// Programmatic: authenticate against multiple strategies
 fastify.get('/api/data', async (request, reply) => {
   const result = await fastifyPassport.authenticateRequest(
     ['bearer', 'basic', 'google'],
     request,
     reply
   )
-  
+
   if (!result.ok) {
     return reply.code(401).send({ error: 'Authentication required' })
   }
-  
+
   return { data: 'sensitive information', user: result.user }
 })
 ```
@@ -400,7 +464,7 @@ fastify.post('/api/verify', async (request, reply) => {
     request,
     reply
   )
-  
+
   if (result.ok) {
     return { verified: true, user: result.user }
   }

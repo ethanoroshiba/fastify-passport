@@ -113,12 +113,15 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
   }
 
   handler = async (request: FastifyRequest, reply: FastifyReply) => {
-    const [failures, _latestStrategyName, _successInfo] = await this.executeStrategies(request, reply)
+    const [failures, _latestStrategyName, successInfo] = await this.executeStrategies(request, reply)
     if (failures.length > 0) {
       return this.onAllFailed(failures, request, reply)
     }
-    // Authentication succeeded - return the result (could be callback return value)
-    return _successInfo as any
+    // Authentication succeeded
+    // Return callback result if callback was provided, otherwise return undefined for backwards compatibility
+    if (this.callback) {
+      return successInfo
+    }
   }
 
   async executeStrategies(request: FastifyRequest, reply: FastifyReply): Promise<[FailureObject[], string, any]> {
@@ -130,8 +133,35 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
     let latestStrategyName: string = 'unknown'
     let successInfo: any
 
+    // authContext tracking
+    const shouldTrack = request.authContext !== undefined
+    let startTime = 0
+    let strategyStartTime = 0
+
+    if (shouldTrack) {
+      startTime = Date.now()
+      const context = request.authContext!
+
+      context.attemptedStrategies = []
+      if ('elapsedPerStrategy' in context) {
+        context.elapsedPerStrategy = []
+      }
+      if ('userId' in context) {
+        context.userId = this.extractUserId(request.user)
+      }
+      if ('requestedScope' in context) {
+        context.requestedScope = this.extractScope(this.options.scope)
+      }
+    }
+
     for (const nameOrInstance of this.strategies) {
       latestStrategyName = this.getStrategyName(nameOrInstance)
+
+      if (shouldTrack) {
+        request.authContext!.attemptedStrategies.push(latestStrategyName)
+        strategyStartTime = Date.now()
+      }
+
       try {
         successInfo = await this.attemptStrategy(
           failures,
@@ -140,9 +170,26 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
           request,
           reply
         )
-        // If we got here without throwing, authentication succeeded
+
+        // Record auth context if set
+        if (shouldTrack) {
+          if (request.authContext!.elapsedPerStrategy !== undefined) {
+            request.authContext!.elapsedPerStrategy.push(Date.now() - strategyStartTime)
+          }
+          request.authContext!.elapsedMs = Date.now() - startTime
+          request.authContext!.status = 'authenticated'
+        }
+
         return [[], latestStrategyName, successInfo]
       } catch (e) {
+        if (shouldTrack) {
+          if (request.authContext!.elapsedPerStrategy !== undefined) {
+            request.authContext!.elapsedPerStrategy.push(Date.now() - strategyStartTime)
+          }
+          request.authContext!.elapsedMs = Date.now() - startTime
+          request.authContext!.status = 'rejected'
+        }
+
         if (e === Unhandled) {
           continue
         } else {
@@ -151,8 +198,23 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
       }
     }
 
-    // All strategies failed - return the latest strategy attempted
     return [failures, latestStrategyName, successInfo]
+  }
+
+  private extractUserId(user: any): string | undefined {
+    if (!user) return undefined
+    if (typeof user === 'string') return user
+    if (typeof user === 'object' && user.id) {
+      return String(user.id)
+    }
+    return undefined
+  }
+
+  private extractScope(scope: string | string[] | undefined): string | undefined {
+    if (!scope) return undefined
+    if (typeof scope === 'string') return scope
+    if (Array.isArray(scope)) return scope.join(' ')
+    return undefined
   }
 
   // Attempts to authenticate with the given strategy, returning the optional success info (or callback result)
@@ -175,7 +237,7 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
       strategy.success = async (user: any, info: { type?: string; message?: string }) => {
         request.log.debug({ strategy: name }, 'passport strategy success')
         info = info || {}
-        
+
         if (this.callback) {
           return resolve(await this.callback(request, reply, null, user, info))
         }

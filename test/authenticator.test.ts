@@ -405,16 +405,16 @@ describe('Authenticator.authenticateRequest', () => {
 
     assert.strictEqual(result.ok, false)
     assert.ok(result.error)
-    
+
     // Test the error message directly (Error.message is not enumerable so JSON.stringify doesn't include it)
     const errorMessage = result.error.message
-    
+
     // The error object should not contain sensitive fields in the sanitized result
     const resultStr = JSON.stringify(result)
     assert.ok(!resultStr.includes(SENSITIVE_TOKEN_FIELD))
     assert.ok(!resultStr.includes(SENSITIVE_API_KEY_FIELD))
     assert.ok(!resultStr.includes(SENSITIVE_EMAIL))
-    
+
     // Test that error messages are sanitized
     assert.ok(!errorMessage.includes(SENSITIVE_JWT), 'JWT should be redacted')
     assert.ok(!errorMessage.includes(SENSITIVE_PASSWORD), 'Password should be redacted')
@@ -427,7 +427,7 @@ describe('Authenticator.authenticateRequest', () => {
       }
     }
     fastifyPassport.use('challenge', new SensitiveChallengeStrategy('challenge'))
-    
+
     const challengeResult = await fastifyPassport.authenticateRequest('challenge', mockRequest, mockReply)
     const challenges = challengeResult.challenges || []
     const challengeStr = challenges.join(' ')
@@ -488,7 +488,7 @@ describe('Authenticator.authenticateRequest', () => {
       redirect: () => mockReply
     } as any
 
-    let result = await fastifyPassport.authenticateRequest('unknown-strategy', mockRequest, mockReply)
+    const result = await fastifyPassport.authenticateRequest('unknown-strategy', mockRequest, mockReply)
     assert.ok(result.error?.message.includes('Unknown authentication strategy'))
     assert.ok(result.error?.message.includes('unknown-strategy'))
   })

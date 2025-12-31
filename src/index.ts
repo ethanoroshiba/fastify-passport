@@ -12,6 +12,7 @@ module.exports = exports = passport
 export default passport
 export { Strategy } from './strategies/base'
 export { Authenticator, type AuthResult } from './Authenticator'
+export type { AuthContext } from 'fastify'
 
 declare module 'fastify' {
   /**
@@ -46,9 +47,19 @@ declare module 'fastify' {
     user?: PassportUser
     authInfo?: Record<string, any>
     account?: PassportUser
+    authContext?: AuthContext;
   }
 
   interface FastifyReply {
     flash: ReturnType<typeof flashFactory>['reply']
+  }
+
+  interface AuthContext {
+    attemptedStrategies: string[];
+    elapsedMs: number;
+    status: 'authenticated' | 'rejected';
+    elapsedPerStrategy?: number[]; // index-aligned with `attemptedStrategies`
+    userId?: string;
+    requestedScope?: string;
   }
 }

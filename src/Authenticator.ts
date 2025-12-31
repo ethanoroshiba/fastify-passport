@@ -26,8 +26,6 @@ export interface AuthenticatorOptions {
   clearSessionIgnoreFields?: string[]
 }
 
-
-
 export interface AuthResult {
   ok: boolean
   strategy: string
@@ -241,7 +239,7 @@ export class Authenticator {
     options?: AuthenticateOptions
   ): Promise<AuthResult> {
     const authenticationRoute = new AuthenticationRoute(this, strategyOrStrategies, options)
-      
+
     let failures: FailureObject[] = []
     let latestStrategy: string = 'unknown'
     let successInfo: { type?: string; message?: string } | undefined
