@@ -1,2 +1,9 @@
 - worked in cursor
-- Used Claude 4.5 sonnet to analyze the codebase and help me understand what was happening, since I am unfamiliar with both the technology and with Typscript
+- Used Claude 4.5 sonnet to analyze the codebase and help me understand what was happening, since I am unfamiliar with both the technology and with Typscript, did the same with GPT 5.2
+- Asked for clarification about both client and server-side session storage, got a lesson in cookies.
+- Used GPT 5.2 to sanity check my design decisions for `AuthResult`
+- Used Sonnet 4.5 to generate unit tests for the new method signature.
+- Have to keep a close eye on it. Small things matter - for example I asked it to create unit tests, it wanted to create a new unit test file for `authenticateRequest()`, but this didn't follow the precedent set by the codebase of keeping all authenticator tests in `authenticator.test.ts`. I also steered it to be more assertive in test successes, such as testing the challenges provided by `authenticateRequest()`
+- Ran first pass of API endpoint implementation with AI, it pretty much fully rewrote the `AuthenticationRoute` handler logic. Had to clean up - refactored authentication route code into helpers, used in both `authenticateRequest()` and the `AuthenticationRoute.handler`
+- AI often preferred approaches which seemed non-idiomatic to me, such as using class-scoped variables to pass information instead of arguments and return values. Maybe this is more standard for TS, but I felt like I was wrestling with it a lot.
+- Used AI to do the bulk of the work updating the readme.

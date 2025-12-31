@@ -11,7 +11,7 @@ const passport = new Authenticator()
 module.exports = exports = passport
 export default passport
 export { Strategy } from './strategies/base'
-export { Authenticator } from './Authenticator'
+export { Authenticator, type AuthResult } from './Authenticator'
 
 declare module 'fastify' {
   /**
