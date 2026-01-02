@@ -8,6 +8,7 @@
   "scripts": {
     "build": "rimraf ./dist && tsc && git rev-parse HEAD > BUILD_SHA",
     "build:test": "tsc --project tsconfig.test.json",
+    "demo": "npm run build && tsx demo-auth-server.ts",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
     "prepublishOnly": "npm run build",
@@ -62,9 +63,10 @@
     "passport-facebook": "^3.0.0",
     "passport-github2": "^0.1.12",
     "passport-google-oauth": "^2.0.0",
-    "rimraf": "^6.0.1",
+    "rimraf": "^6.1.2",
     "set-cookie-parser": "^2.7.1",
     "tsd": "^0.33.0",
+    "tsx": "^4.21.0",
     "typescript": "~5.9.2"
   },
   "files": [

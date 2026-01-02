@@ -2,12 +2,12 @@ import { STATUS_CODES } from 'node:http'
 import type { Authenticator } from './Authenticator'
 import type { AnyStrategy } from './strategies'
 import type { Strategy } from './strategies/base'
-import { AuthenticationError } from './errors'
+import AuthenticationError, { StrategyError } from './errors'
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { types } from 'node:util'
 
 type FlashObject = { type?: string; message?: string }
-type FailureObject = {
+export type FailureObject = {
   challenge?: string | FlashObject
   status?: number
   type?: string
@@ -103,61 +103,142 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
   }
 
   handler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const [failures, , successInfo] = await this.executeStrategies(request, reply)
+    if (failures.length > 0) {
+      return this.onAllFailed(failures, request, reply)
+    }
+    // Authentication succeeded
+    // Return callback result if callback was provided, otherwise return undefined for backwards compatibility
+    if (this.callback) {
+      return successInfo
+    }
+  }
+
+  async executeStrategies (request: FastifyRequest, reply: FastifyReply): Promise<[FailureObject[], string, any]> {
     if (!request.passport) {
       throw new Error('passport.initialize() plugin not in use')
     }
     // accumulator for failures from each strategy in the chain
     const failures: FailureObject[] = []
+    let latestStrategyName: string = 'unknown'
+    let successInfo: any
+
+    // authContext tracking
+    const shouldTrack = request.authContext !== undefined
+    let startTime = 0
+    let strategyStartTime = 0
+
+    if (shouldTrack) {
+      startTime = Date.now()
+      const context = request.authContext!
+
+      context.attemptedStrategies = []
+      if ('elapsedPerStrategy' in context) {
+        context.elapsedPerStrategy = []
+      }
+      if ('userId' in context) {
+        context.userId = this.extractUserId(request.user)
+      }
+      if ('requestedScope' in context) {
+        context.requestedScope = this.extractScope(this.options.scope)
+      }
+    }
 
     for (const nameOrInstance of this.strategies) {
+      latestStrategyName = this.getStrategyName(nameOrInstance)
+
+      if (shouldTrack) {
+        request.authContext!.attemptedStrategies.push(latestStrategyName)
+        strategyStartTime = Date.now()
+      }
+
       try {
-        return await this.attemptStrategy(
+        successInfo = await this.attemptStrategy(
           failures,
-          this.getStrategyName(nameOrInstance),
+          latestStrategyName,
           this.getStrategy(nameOrInstance),
           request,
           reply
         )
+
+        // Record auth context if set
+        if (shouldTrack) {
+          if (request.authContext!.elapsedPerStrategy !== undefined) {
+            request.authContext!.elapsedPerStrategy.push(Date.now() - strategyStartTime)
+          }
+          request.authContext!.elapsedMs = Date.now() - startTime
+          request.authContext!.status = 'authenticated'
+          if ('userId' in request.authContext!) {
+            request.authContext!.userId = this.extractUserId(request.user)
+          }
+        }
+
+        return [[], latestStrategyName, successInfo]
       } catch (e) {
+        if (shouldTrack) {
+          if (request.authContext!.elapsedPerStrategy !== undefined) {
+            request.authContext!.elapsedPerStrategy.push(Date.now() - strategyStartTime)
+          }
+          request.authContext!.elapsedMs = Date.now() - startTime
+          request.authContext!.status = 'rejected'
+        }
+
         if (e === Unhandled) {
           continue
         } else {
-          throw e
+          throw new StrategyError((e as Error).message, latestStrategyName)
         }
       }
     }
 
-    return this.onAllFailed(failures, request, reply)
+    return [failures, latestStrategyName, successInfo]
   }
 
+  private extractUserId (user: any): string | undefined {
+    if (!user) return undefined
+    if (typeof user === 'string') return user
+    if (typeof user === 'object' && user.id) {
+      return String(user.id)
+    }
+    return undefined
+  }
+
+  private extractScope (scope: string | string[] | undefined): string | undefined {
+    if (!scope) return undefined
+    if (typeof scope === 'string') return scope
+    if (Array.isArray(scope)) return scope.join(' ')
+    return undefined
+  }
+
+  // Attempts to authenticate with the given strategy, returning the optional success info (or callback result)
   attemptStrategy (
     failures: FailureObject[],
     name: string,
     prototype: AnyStrategy,
     request: FastifyRequest,
     reply: FastifyReply
-  ) {
+  ): Promise<any> {
     const strategy = Object.create(prototype) as Strategy
 
     // This is a messed up way of adapting passport's API to fastify's async world. We create a promise that the strategy's per-call functions close over and resolve/reject with the result of the strategy. This augmentation business is a key part of how Passport strategies expect to work.
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<any>((resolve, reject) => {
       /**
        * Authenticate `user`, with optional `info`.
        *
        * Strategies should call this function to successfully authenticate a user.  `user` should be an object supplied by the application after it has been given an opportunity to verify credentials.  `info` is an optional argument containing additional user information.  This is useful for third-party authentication strategies to pass profile details.
        */
-      strategy.success = (user: any, info: { type?: string; message?: string }) => {
+      strategy.success = async (user: any, info: { type?: string; message?: string }) => {
         request.log.debug({ strategy: name }, 'passport strategy success')
-        if (this.callback) {
-          return resolve(this.callback(request, reply, null, user, info))
-        }
-
         info = info || {}
+
+        if (this.callback) {
+          return resolve(await this.callback(request, reply, null, user, info))
+        }
         this.applyFlashOrMessage('success', request, info)
 
         if (this.options.assignProperty) {
           request[this.options.assignProperty] = user
-          return resolve()
+          return resolve(info)
         }
 
         request
@@ -177,7 +258,7 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
               } else if (this.options.successRedirect) {
                 reply.redirect(this.options.successRedirect)
               }
-              return resolve()
+              return resolve(info)
             }
 
             if (this.options.authInfo !== false) {
@@ -225,7 +306,7 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
 
         reply.status(status || 302)
         reply.redirect(url)
-        resolve()
+        resolve(undefined)
       }
 
       /**
@@ -236,14 +317,14 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
       strategy.pass = () => {
         request.log.trace({ strategy: name }, 'passport strategy passed')
 
-        resolve()
+        reject(Unhandled)
       }
 
-      const error = (err: Error) => {
+      const error = async (err: Error) => {
         request.log.trace({ strategy: name, err }, 'passport strategy errored')
 
         if (this.callback) {
-          return resolve(this.callback(request, reply, err))
+          return resolve(await this.callback(request, reply, err))
         }
 
         reject(err)

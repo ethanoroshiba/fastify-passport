@@ -1,6 +1,7 @@
-import type { FastifyPluginAsync, FastifyRequest, RouteHandlerMethod } from 'fastify'
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest, PassportUser, RouteHandlerMethod } from 'fastify'
 import { fastifyPlugin } from 'fastify-plugin'
-import { type AuthenticateCallback, type AuthenticateOptions, AuthenticationRoute } from './AuthenticationRoute'
+import { type AuthenticateCallback, type AuthenticateOptions, AuthenticationRoute, FailureObject } from './AuthenticationRoute'
+import { StrategyError } from './errors'
 import { CreateInitializePlugin } from './CreateInitializePlugin'
 import { SecureSessionManager } from './session-managers/SecureSessionManager'
 import type { AnyStrategy } from './strategies/index'
@@ -24,6 +25,16 @@ export interface AuthenticatorOptions {
   userProperty?: string
   clearSessionOnLogin?: boolean
   clearSessionIgnoreFields?: string[]
+}
+
+export interface AuthResult {
+  ok: boolean
+  strategy: string
+  user?: PassportUser
+  info?: { type?: string; message?: string }
+  status?: 401 | 403
+  error?: Error
+  challenges?: string[]
 }
 
 export class Authenticator {
@@ -172,6 +183,107 @@ export class Authenticator {
     }
 
     return new AuthenticationRoute(this, strategyOrStrategies, options, callback).handler
+  }
+
+  /**
+   * Authenticates requests programmatically.
+   *
+   * Applies the `name`ed strategy (or strategies) to the incoming request, in order to authenticate the request.  If authentication is successful, the user will be logged in and populated at `req.user` and a session will be established by default.  If authentication fails, an AuthResult object with ok: false will be returned.
+   *
+   * Options:
+   *   - `session`          Save login state in session, defaults to _true_
+   *   - `successRedirect`  After successful login, redirect to given URL
+   *   - `successMessage`   True to store success message in
+   *                        req.session.messages, or a string to use as override
+   *                        message for success.
+   *   - `successFlash`     True to flash success messages or a string to use as a flash
+   *                        message for success (overrides any from the strategy itself).
+   *   - `failureRedirect`  After failed login, redirect to given URL
+   *   - `failureMessage`   True to store failure message in
+   *                        req.session.messages, or a string to use as override
+   *                        message for failure.
+   *   - `failureFlash`     True to flash failure messages or a string to use as a flash
+   *                        message for failures (overrides any from the strategy itself).
+   *   - `assignProperty`   Assign the object provided by the verify callback to given property
+   *
+   * This method returns a Promise that resolves to an AuthResult object, giving the application full control over how to handle authentication results. The AuthResult contains information about whether authentication succeeded, which strategy was used, the authenticated user, and any failure information.
+   *
+   * Examples:
+   *
+   *    // programmatically authenticate a request and handle the result
+   *    const result = await fastifyPassport.authenticateRequest('local', request, reply, { session: false });
+   *    if (result.ok) {
+   *      reply.send({ user: result.user });
+   *    } else {
+   *      reply.code(result.status || 401).send({ error: result.challenges });
+   *    }
+   *
+   *    // authenticate with session support
+   *    const result = await fastifyPassport.authenticateRequest('jwt', request, reply);
+   *    if (result.ok) {
+   *      reply.redirect('/dashboard');
+   *    } else {
+   *      reply.redirect('/login');
+   *    }
+   *
+   * @param {|String|Array} strategyOrStrategies
+   * @param {FastifyRequest} request
+   * @param {FastifyReply} reply
+   * @param {Object} options
+   * @return {Promise<AuthResult>}
+   * @api public
+   */
+  public async authenticateRequest<StrategyOrStrategies extends string | Strategy | (string | Strategy)[]>(
+    strategyOrStrategies: StrategyOrStrategies,
+    request: FastifyRequest,
+    reply: FastifyReply,
+    options?: AuthenticateOptions
+  ): Promise<AuthResult> {
+    const authenticationRoute = new AuthenticationRoute(this, strategyOrStrategies, options)
+
+    let failures: FailureObject[] = []
+    let latestStrategy: string = 'unknown'
+    let successInfo: { type?: string; message?: string } | undefined
+    try {
+      [failures, latestStrategy, successInfo] = await authenticationRoute.executeStrategies(request, reply)
+    } catch (e) {
+      // For other errors (strategy internal errors), sanitize and return them with the strategy name if available
+      const errorMessage = (e as Error).message
+      const sanitizedMessage = errorMessage ? sanitize(errorMessage) : 'Authentication error'
+      return {
+        ok: false,
+        strategy: (e as StrategyError).strategy,
+        status: 401,
+        error: new Error(sanitizedMessage) // only include message to avoid leaking stack trace
+      }
+    }
+
+    if (successInfo) {
+      return {
+        ok: true,
+        strategy: latestStrategy,
+        user: request.user,
+        info: successInfo,
+      }
+    }
+
+    // Sanitize all failure challenges before returning
+    const sanitizedChallenges = failures.map(failure => {
+      if (typeof failure.challenge === 'string') {
+        return sanitize(failure.challenge)
+      } else if (failure.challenge && typeof failure.challenge === 'object' && failure.challenge.message) {
+        return sanitize(failure.challenge.message)
+      }
+      return failure.challenge
+    })
+
+    // If not explicit success info, treat as failure to catch case of all passes
+    return {
+      ok: false,
+      strategy: latestStrategy,
+      status: failures.length > 0 ? failures[0].status as 401 | 403 : 401, // default to 401 Unauthorized
+      challenges: sanitizedChallenges as string[]
+    }
   }
 
   /**
@@ -362,3 +474,45 @@ export class Authenticator {
 }
 
 export default Authenticator
+
+/**
+ * General-purpose sanitization helper to redact sensitive user data from error messages and challenges.
+ * This is a best-effort sanitization that redacts:
+ * - Bearer tokens and API keys
+ * - OAuth tokens and secrets
+ * - Password-like strings
+ * - Session tokens and cookies
+ * - JWT tokens
+ * - Email addresses
+ * - Common credential patterns
+ */
+function sanitize (input: string): string {
+  const patterns = {
+    bearerToken: /bearer\s+(?!realm)[A-Za-z0-9\-._~+/]+=*/gi,
+    basicAuth: /basic\s+[A-Za-z0-9+/]+=*/gi,
+    jwtToken: /\beyJ[\w\-._~+/]*\.[\w\-._~+/]*\.[\w\-._~+/]*/g,
+    hexToken: /\b[a-f0-9]{32,}\b/gi,
+    longAlphanumeric: /\b[A-Za-z0-9_-]{40,}\b/g,
+    apiKeyPattern: /\b(api[_-]?key|apikey|access[_-]?token|secret[_-]?key|client[_-]?secret)[\s:=]+[\w\-._~+/]+/gi,
+    passwordPattern: /\b(password|passwd|pwd)[\s:=]+\S+/gi,
+    emailAddress: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
+    sessionToken: /\b(session|sid|connect\.sid)[\s:=]+[\w\-._~+/]+/gi,
+    oauthToken: /\b(oauth[_-]?token|oauth[_-]?secret|refresh[_-]?token)[\s:=]+[\w\-._~+/]+/gi,
+    authCode: /\b(code|authorization[_-]?code)[\s:=]+[\w\-._~+/]+/gi
+  }
+
+  const combinedPattern = new RegExp(
+    Object.values(patterns).map(p => `(${p.source})`).join('|'),
+    'gi'
+  )
+
+  const sanitized = input.replace(combinedPattern, '[REDACTED]')
+
+  // Truncate to reasonable length to prevent overly verbose messages
+  const MAX_LENGTH = 500
+  if (sanitized.length > MAX_LENGTH) {
+    return sanitized.substring(0, MAX_LENGTH).trim() + '...'
+  }
+
+  return sanitized.trim()
+}

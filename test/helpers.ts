@@ -15,6 +15,9 @@ const SecretKey = fs.readFileSync(join(__dirname, '../../test', 'secure.key'))
 
 let counter = 0
 export const generateTestUser = () => ({ name: 'test', id: String(counter++) })
+export const getNextUserId = () => String(counter)
+
+export const CHALLENGE_401_INVALID_CREDENTIALS = 'Invalid credentials'
 
 export class TestStrategy extends Strategy {
   authenticate (request: any, _options?: { pauseStream?: boolean }) {
@@ -22,20 +25,17 @@ export class TestStrategy extends Strategy {
       return this.pass()
     }
     if (request.body && request.body.login === 'test' && request.body.password === 'test') {
-      return this.success(generateTestUser())
+      return this.success(generateTestUser(), { message: 'Authentication successful' })
     }
 
-    this.fail()
+    this.fail(CHALLENGE_401_INVALID_CREDENTIALS, 401)
   }
 }
 
 export class TestDatabaseStrategy extends Strategy {
   readonly database: Record<string, { id: string; login: string; password: string }>
 
-  constructor (
-    name: string,
-    database: Record<string, { id: string; login: string; password: string }> = {}
-  ) {
+  constructor (name: string, database: Record<string, { id: string; login: string; password: string }> = {}) {
     super(name)
     this.database = database
   }
@@ -49,11 +49,11 @@ export class TestDatabaseStrategy extends Strategy {
         (user) => user.login === request.body.login && user.password === request.body.password
       )
       if (user) {
-        return this.success(user)
+        return this.success(user, { message: 'Database authentication successful' })
       }
     }
 
-    this.fail()
+    this.fail(CHALLENGE_401_INVALID_CREDENTIALS, 401)
   }
 }
 

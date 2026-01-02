@@ -24,6 +24,8 @@ The community created this fast introduction to `@fastify/passport`:
 
 ## Example
 
+### Quick Start: Hook-Based Authentication
+
 ```js
 import fastifyPassport from '@fastify/passport'
 import fastifySecureSession from '@fastify/secure-session'
@@ -51,6 +53,64 @@ server.post(
   { preValidation: fastifyPassport.authenticate('test', { successRedirect: '/', authInfo: false }) },
   () => {}
 )
+
+server.listen()
+```
+
+### Programmatic Authentication Example
+
+For API endpoints that need custom response handling:
+
+```js
+import { Authenticator } from '@fastify/passport'
+import fastifySecureSession from '@fastify/secure-session'
+
+const server = fastify()
+const fastifyPassport = new Authenticator()
+
+server.register(fastifySecureSession, { key: fs.readFileSync(path.join(__dirname, 'secret-key')) })
+server.register(fastifyPassport.initialize())
+server.register(fastifyPassport.secureSession())
+
+fastifyPassport.use('local', new LocalStrategy())
+
+// Login endpoint with custom response format
+server.post('/api/login', async (request, reply) => {
+  const result = await fastifyPassport.authenticateRequest(
+    'local',
+    request,
+    reply,
+    { session: true }
+  )
+
+  if (result.ok) {
+    return {
+      success: true,
+      user: result.user,
+      message: 'Login successful'
+    }
+  } else {
+    return reply.code(result.status || 401).send({
+      success: false,
+      error: result.challenges?.[0] || 'Authentication failed'
+    })
+  }
+})
+
+// Protected endpoint
+server.get('/api/profile', async (request, reply) => {
+  const result = await fastifyPassport.authenticateRequest(
+    ['jwt', 'session'],
+    request,
+    reply
+  )
+
+  if (!result.ok) {
+    return reply.code(401).send({ error: 'Authentication required' })
+  }
+
+  return { profile: result.user }
+})
 
 server.listen()
 ```
@@ -113,34 +173,197 @@ A hook that **must be added**. Sets up a `@fastify/passport` instance's hooks.
 
 A hook that **must be added**. Sets up `@fastify/passport`'s connector with `@fastify/secure-session` to store authentication in the session.
 
-### authenticate(strategy: string | Strategy | (string | Strategy)[], options: AuthenticateOptions, callback?: AuthenticateCallback)
+## Authentication Methods
 
-Returns a hook that authenticates requests, in other words, validates users and then signs them in. `authenticate` is intended for use as a `preValidation` hook on a particular route like `/login`.
+`@fastify/passport` provides two approaches for authenticating requests: **hook-based** and **programmatic**. Both approaches support the same strategies and options, but differ in how they handle authentication results.
 
-Applies the given strategy (or strategies) to the incoming request, in order to authenticate the request. Strategies are usually registered ahead of time using `.use`, and then passed to `.authenticate` by name. If authentication is successful, the user will be logged in and populated at `request.user` and a session will be established by default. If authentication fails, an unauthorized response will be sent.
+### AuthContext: request.authContext (opt-in observability)
 
-Strategies or arrays of strategies can also be passed as instances. This is useful when using a temporary strategy you only intend to use once for one user and don't want to register into the global list of available strategies.
+`@fastify/passport` can optionally populate **per-request authentication metadata** on `request.authContext`. This is designed for audit logs, metrics, and debugging without leaking sensitive values (it does **not** include passwords, tokens, full user objects, strategy errors, etc.).
 
-Options:
+- **Opt-in per request**: `authContext` is only recorded if you set `request.authContext` to an object at the start of the request lifecycle (for example, in an `onRequest` hook). By default it is `undefined`.
+- **Same for both approaches**: it works the same whether you use the hook-based `authenticate()` or programmatic `authenticateRequest()`.
+- **“Include the key to enable it”**: some fields are only populated if you include that key in the object you set. (This allows you to decide what gets recorded.)
+
+`AuthContext` shape:
+
+```typescript
+interface AuthContext {
+  attemptedStrategies: string[]
+  elapsedMs: number
+  status: 'authenticated' | 'rejected'
+  elapsedPerStrategy?: number[] // index-aligned with attemptedStrategies
+  userId?: string
+  requestedScope?: string
+}
+```
+
+**How to enable it (recommended pattern):**
+
+```js
+// Enable AuthContext on every request (or do this only for routes you care about)
+server.addHook('onRequest', async (request) => {
+  request.authContext = {
+    attemptedStrategies: [],
+    elapsedMs: 0,
+    status: 'rejected',
+
+    // Optional fields: include the key to opt in
+    elapsedPerStrategy: [],
+    userId: '',
+    requestedScope: ''
+  }
+})
+
+// Example: safe audit logging
+server.addHook('onResponse', async (request, reply) => {
+  if (request.authContext) {
+    request.log.info(
+      { auth: request.authContext, statusCode: reply.statusCode },
+      'auth attempt'
+    )
+  }
+})
+```
+
+### Hook-Based: authenticate(strategy, options, callback?)
+
+**When to use:** Standard authentication flows where you want automatic handling of success/failure (redirects, status codes, etc.).
+
+Returns a hook that authenticates requests and automatically handles responses. Use this as a `preValidation` hook on routes like `/login`.
+
+```js
+// Automatic handling - redirects on success/failure
+server.post(
+  '/login',
+  { preValidation: fastifyPassport.authenticate('local', {
+    successRedirect: '/dashboard',
+    failureRedirect: '/login'
+  })},
+  () => {}
+)
+
+// Automatic 401 response on failure
+server.get(
+  '/protected',
+  { preValidation: fastifyPassport.authenticate('jwt') },
+  async (request) => {
+    // If enabled, AuthContext is available here too:
+    // request.log.info({ auth: request.authContext }, 'auth details')
+    return { user: request.user }
+  }
+)
+```
+
+### Programmatic: authenticateRequest(strategy, request, reply, options?)
+
+**When to use:** Custom authentication flows where you need fine-grained control over the response based on the authentication result.
+
+Authenticates a request and returns an `AuthResult` object, giving you full control over how to handle success or failure. Use this inside route handlers when you need to inspect the authentication result before responding.
+
+```typescript
+interface AuthResult {
+  ok: boolean              // true if authentication succeeded
+  strategy: string         // name of the strategy used
+  user?: PassportUser      // authenticated user (if ok: true)
+  info?: object           // additional info from strategy
+  status?: 401 | 403      // HTTP status code (if ok: false)
+  error?: Error           // error details (if ok: false)
+  challenges?: string[]   // failure messages from strategies
+}
+```
+
+```js
+// Custom success/failure handling
+server.post('/api/login', async (request, reply) => {
+  const result = await fastifyPassport.authenticateRequest(
+    'local',
+    request,
+    reply,
+    { session: true }
+  )
+
+  if (result.ok) {
+    return {
+      success: true,
+      user: result.user,
+      // If enabled, AuthContext is populated by the call above:
+      auth: request.authContext,
+      token: generateToken(result.user)
+    }
+  } else {
+    return reply.code(result.status || 401).send({
+      success: false,
+      auth: request.authContext,
+      message: result.challenges?.[0] || 'Authentication failed'
+    })
+  }
+})
+
+// Try multiple strategies with custom fallback logic
+server.get('/api/user', async (request, reply) => {
+  const result = await fastifyPassport.authenticateRequest(
+    ['jwt', 'bearer', 'session'],
+    request,
+    reply
+  )
+
+  if (!result.ok) {
+    // Log failed strategy for monitoring
+    request.log.warn({ strategy: result.strategy }, 'Auth failed')
+    return reply.code(401).send({ error: 'Unauthorized' })
+  }
+
+  return { user: result.user }
+})
+```
+
+### Choosing Between Them
+
+| Use Case | Recommended Approach | Why |
+|----------|---------------------|-----|
+| Traditional login forms with redirects | `authenticate` hook | Automatically handles redirects and flash messages |
+| API endpoints returning JSON | `authenticateRequest` | Custom response format and error handling |
+| Simple route protection | `authenticate` hook | Less boilerplate, automatic 401 responses |
+| Multi-step authentication flows | `authenticateRequest` | Inspect results between steps |
+| Custom error messages/logging | `authenticateRequest` | Access to detailed failure information |
+| OAuth callback handlers | `authenticate` hook | Built-in redirect handling |
+
+### Migration guidance (existing users)
+
+If you’re already using `authenticate()` hooks, you can adopt `AuthContext` **without changing your authentication flow**:
+
+- **What stays the same**: strategies, `authenticate()`/`authorize()` usage, sessions (`secureSession()` / `@fastify/session`), and `request.user` behavior.
+- **What gets easier**: consistent audit logs and metrics (which strategies ran, how long they took, overall outcome) across *both* hook-based and programmatic flows—without needing to parse strategy errors or serialize sensitive objects.
+- **How to adopt**:
+  - Add an `onRequest` hook to initialize `request.authContext` (see the example above), or do it only for routes where you want telemetry.
+  - Optionally include `elapsedPerStrategy`, `userId`, and/or `requestedScope` keys to opt into recording those fields.
+
+You can still adopt `authenticateRequest()` incrementally for routes needing custom response behavior; `AuthContext` works the same either way.
+
+### Common Options (both methods)
+
+Both `authenticate()` and `authenticateRequest()` support the following options:
 
 - `session` Save login state in session, defaults to _true_
-- `successRedirect` After successful login, redirect to given URL
-- `successMessage` True to store success message in
-  req.session.messages, or a string to use as override
-  message for success.
-- `successFlash` True to flash success messages or a string to use as a flash
-  message for success (overrides any from the strategy itself).
-- `failureRedirect` After failed login, redirect to given URL
-- `failureMessage` True to store failure message in
-  req.session.messages, or a string to use as override
-  message for failure.
-- `failureFlash` True to flash failure messages or a string to use as a flash
-  message for failures (overrides any from the strategy itself).
 - `assignProperty` Assign the object provided by the verify callback to given property
 - `state` Pass any provided state through to the strategy (e.g. for Google Oauth)
 - `keepSessionInfo` True to save existing session properties after authentication
 
-An optional `callback` can be supplied to allow the application to override the default manner in which authentication attempts are handled. The callback has the following signature:
+### authenticate() Specific Options
+
+The hook-based `authenticate()` method supports additional options for automatic response handling:
+
+- `successRedirect` After successful login, redirect to given URL
+- `successMessage` True to store success message in req.session.messages, or a string to use as override message for success
+- `successFlash` True to flash success messages or a string to use as a flash message for success (overrides any from the strategy itself)
+- `failureRedirect` After failed login, redirect to given URL
+- `failureMessage` True to store failure message in req.session.messages, or a string to use as override message for failure
+- `failureFlash` True to flash failure messages or a string to use as a flash message for failures (overrides any from the strategy itself)
+
+### authenticate() Callback
+
+The hook-based `authenticate()` can optionally accept a callback to override default authentication handling. The callback has the following signature:
 
 ```js
 (request, reply, err | null, user | false, info?, (status | statuses)?) => Promise<void>
@@ -166,7 +389,9 @@ fastify.get(
 )
 ```
 
-Examples:
+**Note:** When using a callback with `authenticate()`, it becomes your responsibility to log in the user and handle the response. For most custom authentication handling needs, `authenticateRequest()` is simpler as it returns a structured result.
+
+### authenticate() Examples
 
 ```js
 // create a request handler that uses the Facebook strategy
@@ -182,11 +407,9 @@ fastifyPassport.authenticate('local', { successRedirect: '/', failureRedirect: '
 fastifyPassport.authenticate('basic', { session: false });
 ```
 
-Note that if a callback is supplied, it becomes the application's responsibility to log-in the user, establish a session, and otherwise perform the desired operations.
+### Multiple Strategies
 
-#### Multiple Strategies
-
-`@fastify/passport` supports authenticating with a list of strategies, and will try each in order until one passes. Pass an array of strategy names to `authenticate` for this:
+Both `authenticate()` and `authenticateRequest()` support authenticating with multiple strategies by passing an array. The strategies will be tried in order until one succeeds:
 
 ```js
 // somewhere before several strategies are registered
@@ -194,41 +417,59 @@ fastifyPassport.use('bearer', new BearerTokenStrategy())
 fastifyPassport.use('basic', new BasicAuthStrategy())
 fastifyPassport.use('google', new FancyGoogleStrategy())
 
-// and then an `authenticate` call can test incoming requests against multiple strategies
+// Hook-based: authenticate against multiple strategies
 fastify.get(
   '/',
-  { preValidation: fastifyPassport.authenticate(['bearer', 'basic', 'google'], { authInfo: false }) },
-  async (request, reply, err, user, info, status) => {
-    if (err !== null) {
-      console.warn(err)
-    } else if (user) {
-      console.log(`Hello ${user.name}!`)
-    }
-  }
+  { preValidation: fastifyPassport.authenticate(['bearer', 'basic', 'google']) },
+  async (request, reply) => `Hello ${request.user.name}!`
 )
+
+// Programmatic: authenticate against multiple strategies
+fastify.get('/api/data', async (request, reply) => {
+  const result = await fastifyPassport.authenticateRequest(
+    ['bearer', 'basic', 'google'],
+    request,
+    reply
+  )
+
+  if (!result.ok) {
+    return reply.code(401).send({ error: 'Authentication required' })
+  }
+
+  return { data: 'sensitive information', user: result.user }
+})
 ```
 
-Note that multiple strategies that redirect to start an authentication flow, like OAuth2 strategies from major platforms, should not be used together in the same `authenticate` call. This is because `@fastify/passport` will run the strategies in order, and the first one that redirects will do so, preventing the user from ever using the other strategies. To set up multiple OAuth2 strategies, add several routes that each use a different strategy in their own `authenticate` call, and then direct users to the right route for the strategy they pick.
+**Note:** Multiple strategies that redirect to start an authentication flow (like OAuth2) should not be used together in the same call, as the first one will redirect and prevent others from running. Instead, create separate routes for each OAuth2 strategy.
 
-Multiple strategies can also be passed as instances if you only intend to use them for that route handler or for that request.
+Strategies can also be passed as instances (useful for temporary, one-time use):
 
 ```js
-// use an `authenticate` call can test incoming requests against multiple strategies without registering them for use elsewhere
+// Use strategies without registering them globally
 fastify.get(
   '/',
   {
-    preValidation: fastifyPassport.authenticate([new BearerTokenStrategy(), new BasicAuthStrategy()], {
-      authInfo: false,
-    }),
+    preValidation: fastifyPassport.authenticate(
+      [new BearerTokenStrategy(), new BasicAuthStrategy()],
+      { authInfo: false }
+    ),
   },
-  async (request, reply, err, user, info, status) => {
-    if (err !== null) {
-      console.warn(err)
-    } else if (user) {
-      console.log(`Hello ${user.name}!`)
-    }
-  }
+  async (request, reply) => `Hello ${request.user.name}!`
 )
+
+// Or with authenticateRequest
+fastify.post('/api/verify', async (request, reply) => {
+  const result = await fastifyPassport.authenticateRequest(
+    [new BearerTokenStrategy(), new BasicAuthStrategy()],
+    request,
+    reply
+  )
+
+  if (result.ok) {
+    return { verified: true, user: result.user }
+  }
+  return reply.code(401).send({ verified: false })
+})
 ```
 
 ### authorize(strategy: string | Strategy | (string | Strategy)[], options: AuthenticateOptions = {}, callback?: AuthenticateCallback)
@@ -344,6 +585,18 @@ import { User } from './my/types'
 
 declare module 'fastify' {
   interface PassportUser extends User {}
+}
+```
+
+The `AuthResult` type returned by `authenticateRequest()` is also exported:
+
+```typescript
+import { AuthResult } from '@fastify/passport'
+
+const result: AuthResult = await fastifyPassport.authenticateRequest('local', request, reply)
+if (result.ok) {
+  // result.user is typed as PassportUser
+  console.log(result.user)
 }
 ```
 
