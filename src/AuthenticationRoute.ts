@@ -178,6 +178,9 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
           }
           request.authContext!.elapsedMs = Date.now() - startTime
           request.authContext!.status = 'authenticated'
+          if ('userId' in request.authContext!) {
+            request.authContext!.userId = this.extractUserId(request.user)
+          }
         }
 
         return [[], latestStrategyName, successInfo]

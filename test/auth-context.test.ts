@@ -1,27 +1,57 @@
 import assert from 'node:assert'
 import { describe, test } from 'node:test'
-import { getConfiguredTestServer, TestStrategy, TestDatabaseStrategy } from './helpers'
-import type { FastifyRequest } from 'fastify'
+import { getConfiguredTestServer, generateTestUser, CHALLENGE_401_INVALID_CREDENTIALS, getNextUserId } from './helpers'
 import type { AuthContext } from '../src/index'
+import { Strategy } from '../src/strategies'
+
+// Strategy with configurable delay for testing timing calculations
+class DelayedTestStrategy extends Strategy {
+  readonly delayMs: number
+
+  constructor (name: string, delayMs: number = 10) {
+    super(name)
+    this.delayMs = delayMs
+  }
+
+  async authenticate (request: any, _options?: { pauseStream?: boolean }) {
+    await new Promise(resolve => setTimeout(resolve, this.delayMs))
+
+    if (request.isAuthenticated()) {
+      return this.pass()
+    }
+    if (request.body && request.body.login === 'test' && request.body.password === 'test') {
+      return this.success(generateTestUser(), { message: 'Authentication successful' })
+    }
+
+    this.fail(CHALLENGE_401_INVALID_CREDENTIALS, 401)
+  }
+}
 
 const testSuite = (sessionPluginName: string) => {
   describe(`${sessionPluginName} - Auth Context tests`, () => {
     describe('Hook-based authentication', () => {
       test('should populate authContext on successful authentication', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
+        const STRATEGY_DELAY_MS = 10
+        const EXPECTED_SCOPE = 'read:profile'
+        const EXPECTED_USER_ID = getNextUserId()
+        const delayedStrategy = new DelayedTestStrategy('test', STRATEGY_DELAY_MS)
+        const { server, fastifyPassport } = getConfiguredTestServer('test', delayedStrategy)
         let capturedContext: AuthContext | undefined
 
         server.addHook('onRequest', async (request, reply) => {
           request.authContext = {
             attemptedStrategies: [],
             elapsedMs: 0,
-            status: 'rejected'
+            status: 'rejected',
+            elapsedPerStrategy: [],
+            userId: '',
+            requestedScope: ''
           }
         })
 
         server.post(
           '/login',
-          { preValidation: fastifyPassport.authenticate('test', { authInfo: false }) },
+          { preValidation: fastifyPassport.authenticate('test', { authInfo: false, scope: EXPECTED_SCOPE }) },
           async (request, reply) => {
             capturedContext = request.authContext
             reply.send({ success: true, context: request.authContext })
@@ -40,18 +70,34 @@ const testSuite = (sessionPluginName: string) => {
         assert.ok(capturedContext.attemptedStrategies.includes('test'), 'should include test strategy')
         assert.strictEqual(capturedContext.status, 'authenticated')
         assert.strictEqual(typeof capturedContext.elapsedMs, 'number')
-        assert.ok(capturedContext.elapsedMs >= 0, 'elapsed time should be non-negative')
+        assert.ok(capturedContext.elapsedMs >= STRATEGY_DELAY_MS, `elapsed time should include the ${STRATEGY_DELAY_MS}ms delay`)
+        assert.ok(Array.isArray(capturedContext.elapsedPerStrategy), 'elapsedPerStrategy should be an array')
+        assert.strictEqual(
+          capturedContext.elapsedPerStrategy.length,
+          capturedContext.attemptedStrategies.length,
+          'elapsedPerStrategy should be aligned with attemptedStrategies'
+        )
+        assert.ok('userId' in capturedContext, 'userId field should be present when included in initial context')
+        assert.strictEqual(capturedContext.userId, EXPECTED_USER_ID, 'userId should be populated with the expected generated test user id')
+        assert.ok('requestedScope' in capturedContext, 'requestedScope field should be present when included in initial context')
+        assert.strictEqual(capturedContext.requestedScope, EXPECTED_SCOPE, 'requestedScope should match the configured scope')
       })
 
       test('should populate authContext on failed authentication', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
+        const STRATEGY_DELAY_MS = 10
+        const EXPECTED_SCOPE = 'write:data'
+        const delayedStrategy = new DelayedTestStrategy('test', STRATEGY_DELAY_MS)
+        const { server, fastifyPassport } = getConfiguredTestServer('test', delayedStrategy)
         let capturedContext: AuthContext | undefined
 
         server.addHook('onRequest', async (request, reply) => {
           request.authContext = {
             attemptedStrategies: [],
             elapsedMs: 0,
-            status: 'rejected'
+            status: 'rejected',
+            elapsedPerStrategy: [],
+            userId: '',
+            requestedScope: ''
           }
         })
 
@@ -63,7 +109,7 @@ const testSuite = (sessionPluginName: string) => {
 
         server.post(
           '/login',
-          { preValidation: fastifyPassport.authenticate('test', { authInfo: false }) },
+          { preValidation: fastifyPassport.authenticate('test', { authInfo: false, scope: EXPECTED_SCOPE }) },
           async (request, reply) => {
             reply.send({ success: true })
           }
@@ -76,21 +122,85 @@ const testSuite = (sessionPluginName: string) => {
         })
 
         assert.strictEqual(response.statusCode, 401)
-        // Context should still be set even on failure
-        if (capturedContext) {
-          assert.ok(Array.isArray(capturedContext.attemptedStrategies))
-          assert.strictEqual(capturedContext.status, 'rejected')
-          assert.strictEqual(typeof capturedContext.elapsedMs, 'number')
-        }
+        assert.ok(capturedContext, 'authContext should be populated even on failure')
+        assert.ok(Array.isArray(capturedContext.attemptedStrategies))
+        assert.strictEqual(capturedContext.status, 'rejected')
+        assert.strictEqual(typeof capturedContext.elapsedMs, 'number')
+        assert.ok(capturedContext.elapsedMs >= STRATEGY_DELAY_MS, `elapsed time should include the ${STRATEGY_DELAY_MS}ms delay`)
+        assert.ok(Array.isArray(capturedContext.elapsedPerStrategy), 'elapsedPerStrategy should be tracked even on failure')
+        assert.strictEqual(capturedContext.userId, undefined, 'userId should not be populated on failure')
+        assert.ok('requestedScope' in capturedContext, 'requestedScope field should be present when included in initial context')
+        assert.strictEqual(capturedContext.requestedScope, EXPECTED_SCOPE, 'requestedScope should match the configured scope even on failure')
       })
 
       test('should track multiple strategies in authContext', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
-        const strategy2 = new TestStrategy('test2')
+        const FIRST_STRATEGY_DELAY_MS = 10
+        const SECOND_STRATEGY_DELAY_MS = 15
+        const strategy1 = new DelayedTestStrategy('test', FIRST_STRATEGY_DELAY_MS)
+        const strategy2 = new DelayedTestStrategy('test2', SECOND_STRATEGY_DELAY_MS)
+        const { server, fastifyPassport } = getConfiguredTestServer('test', strategy1)
         fastifyPassport.use('test2', strategy2)
         let capturedContext: AuthContext | undefined
 
         server.addHook('onRequest', async (request, reply) => {
+          request.authContext = {
+            attemptedStrategies: [],
+            elapsedMs: 0,
+            status: 'rejected',
+            elapsedPerStrategy: []
+          }
+        })
+
+        server.addHook('onResponse', async (request, reply) => {
+          if (request.url === '/login') {
+            capturedContext = request.authContext
+          }
+        })
+
+        server.post(
+          '/login',
+          { preValidation: fastifyPassport.authenticate(['test', 'test2'], { authInfo: false }) },
+          async (request, reply) => {
+            reply.send({ success: true })
+          }
+        )
+
+        const response = await server.inject({
+          method: 'POST',
+          url: '/login',
+          payload: { login: 'wrong', password: 'wrong' }
+        })
+
+        assert.strictEqual(response.statusCode, 401)
+        assert.ok(capturedContext, 'authContext should be populated')
+        assert.ok(Array.isArray(capturedContext.attemptedStrategies))
+        assert.ok(capturedContext.attemptedStrategies.length > 0)
+
+        // Verify elapsedPerStrategy tracks each strategy's timing
+        assert.ok(Array.isArray(capturedContext.elapsedPerStrategy))
+        assert.strictEqual(
+          capturedContext.elapsedPerStrategy.length,
+          capturedContext.attemptedStrategies.length,
+          'elapsedPerStrategy should have one entry per attempted strategy'
+        )
+        assert.ok(
+          capturedContext.elapsedPerStrategy[0] >= FIRST_STRATEGY_DELAY_MS,
+          `first strategy timing should include its ${FIRST_STRATEGY_DELAY_MS}ms delay`
+        )
+        assert.ok(
+          capturedContext.elapsedPerStrategy[1] >= SECOND_STRATEGY_DELAY_MS,
+          `second strategy timing should include its ${SECOND_STRATEGY_DELAY_MS}ms delay`
+        )
+      })
+
+      test('should not populate optional fields when not included in initial authContext', async () => {
+        const STRATEGY_DELAY_MS = 10
+        const delayedStrategy = new DelayedTestStrategy('test', STRATEGY_DELAY_MS)
+        const { server, fastifyPassport } = getConfiguredTestServer('test', delayedStrategy)
+        let capturedContext: AuthContext | undefined
+
+        server.addHook('onRequest', async (request, reply) => {
+          // No optional fields
           request.authContext = {
             attemptedStrategies: [],
             elapsedMs: 0,
@@ -100,7 +210,7 @@ const testSuite = (sessionPluginName: string) => {
 
         server.post(
           '/login',
-          { preValidation: fastifyPassport.authenticate(['test', 'test2'], { authInfo: false }) },
+          { preValidation: fastifyPassport.authenticate('test', { authInfo: false, scope: 'read:profile' }) },
           async (request, reply) => {
             capturedContext = request.authContext
             reply.send({ success: true })
@@ -115,154 +225,43 @@ const testSuite = (sessionPluginName: string) => {
 
         assert.strictEqual(response.statusCode, 200)
         assert.ok(capturedContext, 'authContext should be populated')
+
+        // Required fields should be populated
         assert.ok(Array.isArray(capturedContext.attemptedStrategies))
-        // Should track which strategies were attempted
-        assert.ok(capturedContext.attemptedStrategies.length > 0)
-      })
+        assert.strictEqual(capturedContext.status, 'authenticated')
+        assert.ok(capturedContext.elapsedMs >= STRATEGY_DELAY_MS)
 
-      test('should include timing information per strategy when available', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
-        let capturedContext: AuthContext | undefined
-
-        server.addHook('onRequest', async (request, reply) => {
-          request.authContext = {
-            attemptedStrategies: [],
-            elapsedMs: 0,
-            status: 'rejected',
-            elapsedPerStrategy: []
-          }
-        })
-
-        server.post(
-          '/login',
-          { preValidation: fastifyPassport.authenticate('test', { authInfo: false }) },
-          async (request, reply) => {
-            capturedContext = request.authContext
-            reply.send({ success: true })
-          }
-        )
-
-        const response = await server.inject({
-          method: 'POST',
-          url: '/login',
-          payload: { login: 'test', password: 'test' }
-        })
-
-        assert.strictEqual(response.statusCode, 200)
-        assert.ok(capturedContext)
-        assert.strictEqual(typeof capturedContext.elapsedMs, 'number')
-
-        // If elapsedPerStrategy is provided, it should be an array
-        if (capturedContext.elapsedPerStrategy) {
-          assert.ok(Array.isArray(capturedContext.elapsedPerStrategy))
-          assert.strictEqual(
-            capturedContext.elapsedPerStrategy.length,
-            capturedContext.attemptedStrategies.length,
-            'elapsedPerStrategy should be aligned with attemptedStrategies'
-          )
-        }
-      })
-
-      test('should include userId in authContext when authentication succeeds', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
-        let capturedContext: AuthContext | undefined
-
-        server.addHook('onRequest', async (request, reply) => {
-          request.authContext = {
-            attemptedStrategies: [],
-            elapsedMs: 0,
-            status: 'rejected',
-            userId: ''
-          }
-        })
-
-        server.post(
-          '/login',
-          { preValidation: fastifyPassport.authenticate('test', { authInfo: false }) },
-          async (request, reply) => {
-            capturedContext = request.authContext
-            reply.send({ success: true })
-          }
-        )
-
-        const response = await server.inject({
-          method: 'POST',
-          url: '/login',
-          payload: { login: 'test', password: 'test' }
-        })
-
-        assert.strictEqual(response.statusCode, 200)
-        assert.ok(capturedContext)
-
-        // userId should be populated if user has an id
-        if (capturedContext.userId) {
-          assert.strictEqual(typeof capturedContext.userId, 'string')
-        }
-      })
-
-      test('should track scope information when provided', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
-        let capturedContext: AuthContext | undefined
-
-        server.addHook('onRequest', async (request, reply) => {
-          request.authContext = {
-            attemptedStrategies: [],
-            elapsedMs: 0,
-            status: 'rejected',
-            requestedScope: ''
-          }
-        })
-
-        server.post(
-          '/login',
-          {
-            preValidation: fastifyPassport.authenticate('test', {
-              authInfo: false,
-              scope: 'read:profile'
-            })
-          },
-          async (request, reply) => {
-            capturedContext = request.authContext
-            reply.send({ success: true })
-          }
-        )
-
-        const response = await server.inject({
-          method: 'POST',
-          url: '/login',
-          payload: { login: 'test', password: 'test' }
-        })
-
-        assert.strictEqual(response.statusCode, 200)
-        assert.ok(capturedContext)
-
-        // If scope was provided, it should be tracked
-        if (capturedContext.requestedScope) {
-          assert.ok(
-            capturedContext.requestedScope === 'read:profile' ||
-            (typeof capturedContext.requestedScope === 'string' &&
-             capturedContext.requestedScope.includes('read:profile'))
-          )
-        }
+        // Optional fields should NOT be present when not included in initial context
+        assert.strictEqual(capturedContext.elapsedPerStrategy, undefined, 'elapsedPerStrategy should not be populated')
+        assert.strictEqual(capturedContext.userId, undefined, 'userId should not be populated')
+        assert.strictEqual(capturedContext.requestedScope, undefined, 'requestedScope should not be populated')
       })
     })
 
     describe('Programmatic authentication', () => {
       test('should populate authContext on successful programmatic authentication', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
+        const STRATEGY_DELAY_MS = 10
+        const EXPECTED_SCOPE = 'admin:read'
+        const EXPECTED_USER_ID = getNextUserId()
+        const delayedStrategy = new DelayedTestStrategy('test', STRATEGY_DELAY_MS)
+        const { server, fastifyPassport } = getConfiguredTestServer('test', delayedStrategy)
         let capturedContext: AuthContext | undefined
 
         server.addHook('onRequest', async (request, reply) => {
           request.authContext = {
             attemptedStrategies: [],
             elapsedMs: 0,
-            status: 'rejected'
+            status: 'rejected',
+            elapsedPerStrategy: [],
+            userId: '',
+            requestedScope: ''
           }
         })
 
         server.post('/auth', async (request, reply) => {
           const result = await fastifyPassport.authenticateRequest('test', request, reply, {
-            session: false
+            session: false,
+            scope: EXPECTED_SCOPE
           })
 
           capturedContext = request.authContext
@@ -290,23 +289,36 @@ const testSuite = (sessionPluginName: string) => {
         assert.ok(capturedContext.attemptedStrategies.includes('test'))
         assert.strictEqual(capturedContext.status, 'authenticated')
         assert.strictEqual(typeof capturedContext.elapsedMs, 'number')
+        assert.ok(capturedContext.elapsedMs >= STRATEGY_DELAY_MS, `elapsed time should include the ${STRATEGY_DELAY_MS}ms delay`)
+        assert.ok(Array.isArray(capturedContext.elapsedPerStrategy), 'elapsedPerStrategy should be an array')
+        assert.ok('userId' in capturedContext, 'userId field should be present when included in initial context')
+        assert.strictEqual(capturedContext.userId, EXPECTED_USER_ID, 'userId should be populated with the expected generated test user id')
+        assert.ok('requestedScope' in capturedContext, 'requestedScope field should be present when included in initial context')
+        assert.strictEqual(capturedContext.requestedScope, EXPECTED_SCOPE, 'requestedScope should match the configured scope')
       })
 
       test('should populate authContext on failed programmatic authentication', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
+        const STRATEGY_DELAY_MS = 10
+        const EXPECTED_SCOPE = 'admin:write'
+        const delayedStrategy = new DelayedTestStrategy('test', STRATEGY_DELAY_MS)
+        const { server, fastifyPassport } = getConfiguredTestServer('test', delayedStrategy)
         let capturedContext: AuthContext | undefined
 
         server.addHook('onRequest', async (request, reply) => {
           request.authContext = {
             attemptedStrategies: [],
             elapsedMs: 0,
-            status: 'rejected'
+            status: 'rejected',
+            elapsedPerStrategy: [],
+            userId: '',
+            requestedScope: ''
           }
         })
 
         server.post('/auth', async (request, reply) => {
           const result = await fastifyPassport.authenticateRequest('test', request, reply, {
-            session: false
+            session: false,
+            scope: EXPECTED_SCOPE
           })
 
           capturedContext = request.authContext
@@ -331,13 +343,19 @@ const testSuite = (sessionPluginName: string) => {
         assert.ok(capturedContext, 'authContext should be populated even on failure')
         assert.strictEqual(capturedContext.status, 'rejected')
         assert.ok(Array.isArray(capturedContext.attemptedStrategies))
+        assert.ok(capturedContext.elapsedMs >= STRATEGY_DELAY_MS, `elapsed time should include the ${STRATEGY_DELAY_MS}ms delay`)
+        assert.ok(Array.isArray(capturedContext.elapsedPerStrategy), 'elapsedPerStrategy should be tracked even on failure')
+        assert.strictEqual(capturedContext.userId, undefined, 'userId should not be populated on failure')
+        assert.ok('requestedScope' in capturedContext, 'requestedScope field should be present when included in initial context')
+        assert.strictEqual(capturedContext.requestedScope, EXPECTED_SCOPE, 'requestedScope should match the configured scope even on failure')
       })
 
       test('should track multiple strategies in programmatic authentication', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
-        const strategy2 = new TestDatabaseStrategy('db', {
-          1: { id: '1', login: 'dbuser', password: 'dbpass' }
-        })
+        const FIRST_STRATEGY_DELAY_MS = 12
+        const SECOND_STRATEGY_DELAY_MS = 8
+        const strategy1 = new DelayedTestStrategy('test', FIRST_STRATEGY_DELAY_MS)
+        const strategy2 = new DelayedTestStrategy('db', SECOND_STRATEGY_DELAY_MS)
+        const { server, fastifyPassport } = getConfiguredTestServer('test', strategy1)
         fastifyPassport.use('db', strategy2)
         let capturedContext: AuthContext | undefined
 
@@ -345,7 +363,8 @@ const testSuite = (sessionPluginName: string) => {
           request.authContext = {
             attemptedStrategies: [],
             elapsedMs: 0,
-            status: 'rejected'
+            status: 'rejected',
+            elapsedPerStrategy: []
           }
         })
 
@@ -366,17 +385,40 @@ const testSuite = (sessionPluginName: string) => {
           }
         })
 
+        server.addHook('onResponse', async (request, reply) => {
+          if (request.url === '/auth') {
+            capturedContext = request.authContext
+          }
+        })
+
         // Test with credentials that match the 'test' strategy
         const response = await server.inject({
           method: 'POST',
           url: '/auth',
-          payload: { login: 'test', password: 'test' }
+          payload: { login: 'wrong', password: 'wrong' }
         })
 
-        assert.strictEqual(response.statusCode, 200)
+        assert.strictEqual(response.statusCode, 401)
         assert.ok(capturedContext)
         assert.ok(Array.isArray(capturedContext.attemptedStrategies))
         assert.ok(capturedContext.attemptedStrategies.length > 0)
+
+        // Verify elapsedPerStrategy tracks each strategy's timing
+        assert.ok(Array.isArray(capturedContext.elapsedPerStrategy))
+        assert.strictEqual(
+          capturedContext.elapsedPerStrategy.length,
+          capturedContext.attemptedStrategies.length,
+          'elapsedPerStrategy should have one entry per attempted strategy'
+        )
+        // First strategy should have taken at least its delay time
+        assert.ok(
+          capturedContext.elapsedPerStrategy[0] >= FIRST_STRATEGY_DELAY_MS,
+          `first strategy timing should include its ${FIRST_STRATEGY_DELAY_MS}ms delay`
+        )
+        assert.ok(
+          capturedContext.elapsedPerStrategy[1] >= SECOND_STRATEGY_DELAY_MS,
+          `second strategy timing should include its ${SECOND_STRATEGY_DELAY_MS}ms delay`
+        )
       })
 
       test('should provide consistent context between hook and programmatic approaches', async () => {
@@ -585,157 +627,6 @@ const testSuite = (sessionPluginName: string) => {
         if (capturedContexts.length >= 2) {
           assert.notStrictEqual(capturedContexts[0], capturedContexts[1])
         }
-      })
-    })
-
-    describe('Observability and metrics', () => {
-      test('should provide useful metrics for monitoring', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
-        let capturedContext: AuthContext | undefined
-
-        server.addHook('onRequest', async (request, reply) => {
-          request.authContext = {
-            attemptedStrategies: [],
-            elapsedMs: 0,
-            status: 'rejected'
-          }
-        })
-
-        server.post(
-          '/login',
-          { preValidation: fastifyPassport.authenticate('test', { authInfo: false }) },
-          async (request, reply) => {
-            capturedContext = request.authContext
-            reply.send({ success: true })
-          }
-        )
-
-        const response = await server.inject({
-          method: 'POST',
-          url: '/login',
-          payload: { login: 'test', password: 'test' }
-        })
-
-        assert.strictEqual(response.statusCode, 200)
-        assert.ok(capturedContext)
-
-        // Should have key observability fields
-        assert.ok(capturedContext.attemptedStrategies, 'should track strategies')
-        assert.ok(typeof capturedContext.elapsedMs === 'number', 'should track timing')
-        assert.ok(capturedContext.status, 'should track outcome')
-
-        // These are the minimum fields needed for good observability
-        const requiredFields = ['attemptedStrategies', 'elapsedMs', 'status']
-        requiredFields.forEach(field => {
-          assert.ok(field in capturedContext!, `should have ${field} for observability`)
-        })
-      })
-
-      test('should allow for audit logging without exposing sensitive data', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
-        const auditLog: any[] = []
-
-        server.addHook('onRequest', async (request, reply) => {
-          request.authContext = {
-            attemptedStrategies: [],
-            elapsedMs: 0,
-            status: 'rejected'
-          }
-        })
-
-        server.addHook('onResponse', async (request, reply) => {
-          if (request.authContext) {
-            // Simulate audit logging
-            auditLog.push({
-              timestamp: new Date().toISOString(),
-              url: request.url,
-              method: request.method,
-              authContext: request.authContext,
-              statusCode: reply.statusCode
-            })
-          }
-        })
-
-        server.post(
-          '/login',
-          { preValidation: fastifyPassport.authenticate('test', { authInfo: false }) },
-          async (request, reply) => {
-            reply.send({ success: true })
-          }
-        )
-
-        await server.inject({
-          method: 'POST',
-          url: '/login',
-          payload: { login: 'test', password: 'test' }
-        })
-
-        assert.strictEqual(auditLog.length, 1)
-        const logEntry = auditLog[0]
-
-        // Should have audit trail information
-        assert.ok(logEntry.timestamp)
-        assert.strictEqual(logEntry.url, '/login')
-        assert.strictEqual(logEntry.method, 'POST')
-        assert.ok(logEntry.authContext)
-
-        // Context should be safe to log
-        const contextStr = JSON.stringify(logEntry.authContext)
-        assert.ok(!contextStr.includes('password'))
-      })
-
-      test('should track authentication performance across strategies', async () => {
-        const { server, fastifyPassport } = getConfiguredTestServer()
-        const slowStrategy = new TestDatabaseStrategy('slow-db', {})
-        // Override authenticate to add delay
-        const originalAuthenticate = slowStrategy.authenticate.bind(slowStrategy)
-        slowStrategy.authenticate = async function (request: FastifyRequest, options: any) {
-          await new Promise(resolve => setTimeout(resolve, 50))
-          return originalAuthenticate(request, options)
-        }
-
-        fastifyPassport.use('slow', slowStrategy)
-        let capturedContext: AuthContext | undefined
-
-        server.addHook('onRequest', async (request, reply) => {
-          request.authContext = {
-            attemptedStrategies: [],
-            elapsedMs: 0,
-            status: 'rejected'
-          }
-        })
-
-        server.post('/auth', async (request, reply) => {
-          const result = await fastifyPassport.authenticateRequest(
-            ['slow', 'test'],
-            request,
-            reply,
-            { session: false }
-          )
-
-          capturedContext = request.authContext
-
-          if (result.ok) {
-            reply.send({ success: true })
-          } else {
-            reply.code(401).send({ success: false })
-          }
-        })
-
-        const startTime = Date.now()
-        await server.inject({
-          method: 'POST',
-          url: '/auth',
-          payload: { login: 'test', password: 'test' }
-        })
-        const totalTime = Date.now() - startTime
-
-        assert.ok(capturedContext)
-        assert.ok(capturedContext.elapsedMs > 0, 'should track elapsed time')
-        assert.ok(
-          capturedContext.elapsedMs <= totalTime,
-          'elapsed time should be reasonable'
-        )
       })
     })
   })

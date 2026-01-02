@@ -15,6 +15,7 @@ const SecretKey = fs.readFileSync(join(__dirname, '../../test', 'secure.key'))
 
 let counter = 0
 export const generateTestUser = () => ({ name: 'test', id: String(counter++) })
+export const getNextUserId = () => String(counter)
 
 export const CHALLENGE_401_INVALID_CREDENTIALS = 'Invalid credentials'
 
