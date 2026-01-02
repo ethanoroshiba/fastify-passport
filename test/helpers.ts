@@ -19,7 +19,7 @@ export const generateTestUser = () => ({ name: 'test', id: String(counter++) })
 export const CHALLENGE_401_INVALID_CREDENTIALS = 'Invalid credentials'
 
 export class TestStrategy extends Strategy {
-  authenticate(request: any, _options?: { pauseStream?: boolean }) {
+  authenticate (request: any, _options?: { pauseStream?: boolean }) {
     if (request.isAuthenticated()) {
       return this.pass()
     }
@@ -34,12 +34,12 @@ export class TestStrategy extends Strategy {
 export class TestDatabaseStrategy extends Strategy {
   readonly database: Record<string, { id: string; login: string; password: string }>
 
-  constructor(name: string, database: Record<string, { id: string; login: string; password: string }> = {}) {
+  constructor (name: string, database: Record<string, { id: string; login: string; password: string }> = {}) {
     super(name)
     this.database = database
   }
 
-  authenticate(request: any, _options?: { pauseStream?: boolean }) {
+  authenticate (request: any, _options?: { pauseStream?: boolean }) {
     if (request.isAuthenticated()) {
       return this.pass()
     }
@@ -61,12 +61,12 @@ export class TestBrowserSession {
   cookies: Record<string, string>
   server: FastifyInstance
 
-  constructor(server: FastifyInstance) {
+  constructor (server: FastifyInstance) {
     this.server = server
     this.cookies = {}
   }
 
-  async inject(opts: InjectOptions): Promise<LightMyRequestResponse> {
+  async inject (opts: InjectOptions): Promise<LightMyRequestResponse> {
     opts.headers || (opts.headers = {})
     opts.headers.cookie = Object.entries(this.cookies)
       .map(([key, value]) => `${key}=${value}`)

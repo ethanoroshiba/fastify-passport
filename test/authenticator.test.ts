@@ -163,7 +163,7 @@ describe('Authenticator.authenticateRequest', () => {
       passport: fastifyPassport,
       isAuthenticated: () => false,
       log: mockLogger,
-      logIn: async function(user: any, options: any) {
+      logIn: async function (user: any, options: any) {
         this.user = user
       }
     } as any
@@ -220,14 +220,14 @@ describe('Authenticator.authenticateRequest', () => {
 
     // Register a strategy that always fails
     class AlwaysFailStrategy extends Strategy {
-      authenticate() {
+      authenticate () {
         this.fail('Always fails', 401)
       }
     }
 
     // Register a strategy that always succeeds
     class AlwaysSucceedStrategy extends Strategy {
-      authenticate() {
+      authenticate () {
         this.success({ name: 'test', id: '1' }, { message: 'Success' })
       }
     }
@@ -240,7 +240,7 @@ describe('Authenticator.authenticateRequest', () => {
       passport: fastifyPassport,
       isAuthenticated: () => false,
       log: mockLogger,
-      logIn: async function(user: any, options: any) {
+      logIn: async function (user: any, options: any) {
         this.user = user
       }
     } as any
@@ -303,7 +303,7 @@ describe('Authenticator.authenticateRequest', () => {
     const { fastifyPassport } = getRegisteredTestServer()
 
     class ErrorStrategy extends Strategy {
-      authenticate(_request: any, _options?: { pauseStream?: boolean }) {
+      authenticate (_request: any, _options?: { pauseStream?: boolean }) {
         this.error(new Error('Strategy internal error'))
       }
     }
@@ -345,7 +345,7 @@ describe('Authenticator.authenticateRequest', () => {
         get: () => undefined
       },
       log: mockLogger,
-      logIn: async function(user: any, options: any) {
+      logIn: async function (user: any, options: any) {
         this.user = user
       }
     } as any
@@ -377,7 +377,7 @@ describe('Authenticator.authenticateRequest', () => {
     const REDACTED_MARKER = '[REDACTED]'
 
     class SensitiveErrorStrategy extends Strategy {
-      authenticate(_request: any, _options?: { pauseStream?: boolean }) {
+      authenticate (_request: any, _options?: { pauseStream?: boolean }) {
         const error = new Error(`Authentication failed with token: ${SENSITIVE_JWT} and password=${SENSITIVE_PASSWORD}`) as any
         error.token = SENSITIVE_TOKEN_FIELD
         error.apiKey = SENSITIVE_API_KEY_FIELD
@@ -422,7 +422,7 @@ describe('Authenticator.authenticateRequest', () => {
 
     // Test sensitive data in challenges (fail messages)
     class SensitiveChallengeStrategy extends Strategy {
-      authenticate(_request: any, _options?: { pauseStream?: boolean }) {
+      authenticate (_request: any, _options?: { pauseStream?: boolean }) {
         this.fail(`Invalid Bearer ${SENSITIVE_BEARER_TOKEN} with api_key=${SENSITIVE_API_KEY}`)
       }
     }
@@ -447,7 +447,7 @@ describe('Authenticator.authenticateRequest', () => {
       passport: fastifyPassport,
       isAuthenticated: () => false,
       log: mockLogger,
-      logIn: async function(user: any, options: any) {
+      logIn: async function (user: any, options: any) {
         this.user = user
       }
     } as any
@@ -498,7 +498,7 @@ describe('Authenticator.authenticateRequest', () => {
 
     // Inline strategy that fails without a challenge message
     class FailNoChallenge extends Strategy {
-      authenticate() {
+      authenticate () {
         this.fail(401)
       }
     }
@@ -532,7 +532,7 @@ describe('Authenticator.authenticateRequest', () => {
     const { fastifyPassport } = getRegisteredTestServer()
 
     class PassStrategy extends Strategy {
-      authenticate(_request: any, _options?: { pauseStream?: boolean }) {
+      authenticate (_request: any, _options?: { pauseStream?: boolean }) {
         this.pass()
       }
     }

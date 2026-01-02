@@ -8,11 +8,11 @@ import type { AuthContext } from 'fastify'
  * Simple validation: accepts keys starting with "valid-"
  */
 class ApiKeyStrategy extends Strategy {
-  constructor() {
+  constructor () {
     super('apikey')
   }
 
-  async authenticate(request: FastifyRequest) {
+  async authenticate (request: FastifyRequest) {
     // Add small delay to demonstrate timing capture in AuthContext
     await new Promise(resolve => setTimeout(resolve, 15))
 
@@ -182,7 +182,7 @@ server.get('/custom-errors', async (request: FastifyRequest, reply: FastifyReply
           } else {
             return {
               strategy: index === 0 ? 'session' : 'apikey',
-              challenge: challenge
+              challenge: challenge as string
             }
           }
         }
@@ -269,7 +269,7 @@ server.get('/observability', async (request: FastifyRequest, reply: FastifyReply
 /**
  * Runs automated tests to demonstrate the new features
  */
-async function runDemoTests() {
+async function runDemoTests () {
   console.log('')
   console.log('═══════════════════════════════════════════════════════════')
   console.log('  Running Automated Demo Tests')
@@ -296,7 +296,7 @@ async function runDemoTests() {
       const data = await response.json()
 
       console.log(`   Status: ${response.status}`)
-      console.log(`   Response:`)
+      console.log('   Response:')
       console.log(JSON.stringify(data, null, 2).split('\n').map(line => `     ${line}`).join('\n'))
 
       return { success: response.ok, data }
@@ -418,7 +418,6 @@ const start = async () => {
     await server.close()
     console.log('Demo complete!')
     process.exit(0)
-
   } catch (err) {
     console.error('Failed to start server:', err)
     process.exit(1)

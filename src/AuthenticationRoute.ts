@@ -17,7 +17,7 @@ export type FailureObject = {
 export class StrategyError extends Error {
   strategy: string
 
-  constructor(message: string, strategy: string) {
+  constructor (message: string, strategy: string) {
     super(message)
     this.strategy = strategy
   }
@@ -113,7 +113,7 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
   }
 
   handler = async (request: FastifyRequest, reply: FastifyReply) => {
-    const [failures, _latestStrategyName, successInfo] = await this.executeStrategies(request, reply)
+    const [failures, , successInfo] = await this.executeStrategies(request, reply)
     if (failures.length > 0) {
       return this.onAllFailed(failures, request, reply)
     }
@@ -124,7 +124,7 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
     }
   }
 
-  async executeStrategies(request: FastifyRequest, reply: FastifyReply): Promise<[FailureObject[], string, any]> {
+  async executeStrategies (request: FastifyRequest, reply: FastifyReply): Promise<[FailureObject[], string, any]> {
     if (!request.passport) {
       throw new Error('passport.initialize() plugin not in use')
     }
@@ -201,7 +201,7 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
     return [failures, latestStrategyName, successInfo]
   }
 
-  private extractUserId(user: any): string | undefined {
+  private extractUserId (user: any): string | undefined {
     if (!user) return undefined
     if (typeof user === 'string') return user
     if (typeof user === 'object' && user.id) {
@@ -210,7 +210,7 @@ export class AuthenticationRoute<StrategyOrStrategies extends string | Strategy 
     return undefined
   }
 
-  private extractScope(scope: string | string[] | undefined): string | undefined {
+  private extractScope (scope: string | string[] | undefined): string | undefined {
     if (!scope) return undefined
     if (typeof scope === 'string') return scope
     if (Array.isArray(scope)) return scope.join(' ')

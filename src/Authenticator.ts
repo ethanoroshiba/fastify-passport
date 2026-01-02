@@ -50,7 +50,7 @@ export class Authenticator {
   private clearSessionOnLogin: boolean
   private clearSessionIgnoreFields: string[]
 
-  constructor(options: AuthenticatorOptions = {}) {
+  constructor (options: AuthenticatorOptions = {}) {
     this.key = options.key || 'passport'
     this.userProperty = options.userProperty || 'user'
     this.use(new SessionStrategy(this.deserializeUser.bind(this)))
@@ -66,9 +66,9 @@ export class Authenticator {
     )
   }
 
-  use(strategy: AnyStrategy): this
-  use(name: string, strategy: AnyStrategy): this
-  use(name: AnyStrategy | string, strategy?: AnyStrategy): this {
+  use (strategy: AnyStrategy): this
+  use (name: string, strategy: AnyStrategy): this
+  use (name: AnyStrategy | string, strategy?: AnyStrategy): this {
     if (!strategy) {
       strategy = name as AnyStrategy
       name = strategy.name as string
@@ -81,12 +81,12 @@ export class Authenticator {
     return this
   }
 
-  public unuse(name: string): this {
+  public unuse (name: string): this {
     delete this.strategies[name]
     return this
   }
 
-  public initialize(): FastifyPluginAsync {
+  public initialize (): FastifyPluginAsync {
     return CreateInitializePlugin(this)
   }
 
@@ -357,7 +357,7 @@ export class Authenticator {
    *
    * @return {Function} middleware
    */
-  public secureSession(options?: AuthenticateOptions): FastifyPluginAsync {
+  public secureSession (options?: AuthenticateOptions): FastifyPluginAsync {
     return fastifyPlugin(async (fastify) => {
       fastify.addHook('preValidation', new AuthenticationRoute(this, 'session', options).handler)
     })
@@ -436,11 +436,11 @@ export class Authenticator {
    *
    * @api public
    */
-  registerAuthInfoTransformer(fn: InfoTransformerFunction) {
+  registerAuthInfoTransformer (fn: InfoTransformerFunction) {
     this.infoTransformers.push(fn)
   }
 
-  async transformAuthInfo(info: any, request: FastifyRequest) {
+  async transformAuthInfo (info: any, request: FastifyRequest) {
     const result = await this.runStack(this.infoTransformers, info, request)
     // if no transformers are registered (or they all pass), the default behavior is to use the un-transformed info as-is
     return result || info
@@ -453,7 +453,7 @@ export class Authenticator {
    * @return {AnyStrategy}
    * @api private
    */
-  strategy(name: string): AnyStrategy | undefined {
+  strategy (name: string): AnyStrategy | undefined {
     return this.strategies[name]
   }
 
@@ -485,13 +485,13 @@ export default Authenticator
  * - Email addresses
  * - Common credential patterns
  */
-function sanitize(input: string): string {
+function sanitize (input: string): string {
   const patterns = {
     bearerToken: /bearer\s+(?!realm)[A-Za-z0-9\-._~+/]+=*/gi,
     basicAuth: /basic\s+[A-Za-z0-9+/]+=*/gi,
     jwtToken: /\beyJ[\w\-._~+/]*\.[\w\-._~+/]*\.[\w\-._~+/]*/g,
     hexToken: /\b[a-f0-9]{32,}\b/gi,
-    longAlphanumeric: /\b[A-Za-z0-9_\-]{40,}\b/g,
+    longAlphanumeric: /\b[A-Za-z0-9_-]{40,}\b/g,
     apiKeyPattern: /\b(api[_-]?key|apikey|access[_-]?token|secret[_-]?key|client[_-]?secret)[\s:=]+[\w\-._~+/]+/gi,
     passwordPattern: /\b(password|passwd|pwd)[\s:=]+\S+/gi,
     emailAddress: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,

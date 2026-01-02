@@ -689,7 +689,7 @@ const testSuite = (sessionPluginName: string) => {
         const slowStrategy = new TestDatabaseStrategy('slow-db', {})
         // Override authenticate to add delay
         const originalAuthenticate = slowStrategy.authenticate.bind(slowStrategy)
-        slowStrategy.authenticate = async function(request: FastifyRequest, options: any) {
+        slowStrategy.authenticate = async function (request: FastifyRequest, options: any) {
           await new Promise(resolve => setTimeout(resolve, 50))
           return originalAuthenticate(request, options)
         }
