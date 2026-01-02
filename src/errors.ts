@@ -12,3 +12,13 @@ export class AuthenticationError extends Error {
 }
 
 export default AuthenticationError
+
+// Wrapper type for strategy errors to allow strategy name to be passed to handlers
+export class StrategyError extends Error {
+  strategy: string
+
+  constructor (message: string, strategy: string) {
+    super(message)
+    this.strategy = strategy
+  }
+}

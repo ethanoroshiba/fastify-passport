@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest, PassportUser, RouteHandlerMethod } from 'fastify'
 import { fastifyPlugin } from 'fastify-plugin'
-import { type AuthenticateCallback, type AuthenticateOptions, AuthenticationRoute, FailureObject, StrategyError } from './AuthenticationRoute'
+import { type AuthenticateCallback, type AuthenticateOptions, AuthenticationRoute, FailureObject } from './AuthenticationRoute'
+import { StrategyError } from './errors'
 import { CreateInitializePlugin } from './CreateInitializePlugin'
 import { SecureSessionManager } from './session-managers/SecureSessionManager'
 import type { AnyStrategy } from './strategies/index'

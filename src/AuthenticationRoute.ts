@@ -2,7 +2,7 @@ import { STATUS_CODES } from 'node:http'
 import type { Authenticator } from './Authenticator'
 import type { AnyStrategy } from './strategies'
 import type { Strategy } from './strategies/base'
-import { AuthenticationError } from './errors'
+import AuthenticationError, { StrategyError } from './errors'
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { types } from 'node:util'
 
@@ -11,16 +11,6 @@ export type FailureObject = {
   challenge?: string | FlashObject
   status?: number
   type?: string
-}
-
-// Wrapper type for strategy errors to allow strategy name to be passed to handlers
-export class StrategyError extends Error {
-  strategy: string
-
-  constructor (message: string, strategy: string) {
-    super(message)
-    this.strategy = strategy
-  }
 }
 
 declare module '@fastify/secure-session' {
